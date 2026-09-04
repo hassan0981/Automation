@@ -3,7 +3,7 @@
  * Connects frontend directly to n8n webhook workflow.
  */
 
-export const BUILD_MARKER = "v1.0.4-live-debug";
+export const BUILD_MARKER = "v1.0.5";
 
 // n8n Webhook Endpoints
 export const N8N_TEST_WEBHOOK_URL =
@@ -22,14 +22,12 @@ export const N8N_WEBHOOK_URL: string =
   import.meta.env.VITE_N8N_WEBHOOK_URL ||
   (import.meta.env.DEV ? N8N_TEST_WEBHOOK_URL : N8N_PROD_WEBHOOK_URL);
 
-console.log(`[Bouncy AI] Initialized (${BUILD_MARKER}) | Mode: ${import.meta.env.DEV ? "DEV" : "PROD"} | Target: ${N8N_WEBHOOK_URL}`);
-
 /**
- * Sends a message to the n8n AI webhook workflow.
+ * Sends a message to the n8n AI webhook workflow and returns data.reply.
  * 
  * @param message The user's input text
  * @param sessionId Optional conversation session ID (defaults to 'demo-session')
- * @returns Promise<string> The assistant's reply text
+ * @returns Promise<string> The assistant's reply text from data.reply
  */
 export async function sendMessage(
   message: string,
@@ -40,77 +38,25 @@ export async function sendMessage(
     sessionId,
   };
 
-  const environmentMode = import.meta.env.DEV ? "Development (Test Webhook)" : "Production (Live Webhook)";
+  console.log(`[Bouncy AI] Calling Webhook URL: ${N8N_WEBHOOK_URL}`);
+  console.log("[Bouncy AI] Payload:", payload);
 
-  console.log(`[Bouncy AI] (${BUILD_MARKER}) Environment: ${environmentMode}`);
-  console.log(`[Bouncy AI] (${BUILD_MARKER}) Calling Webhook URL: ${N8N_WEBHOOK_URL}`);
-  console.log(`[Bouncy AI] (${BUILD_MARKER}) Request Payload:`, payload);
+  const response = await fetch(N8N_WEBHOOK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 
-  // Setup 30s timeout abort controller
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    console.warn(`[Bouncy AI] (${BUILD_MARKER}) 30-second timeout reached. Aborting request.`);
-    controller.abort();
-  }, 30000);
-
-  try {
-    console.log(`[Bouncy AI] (${BUILD_MARKER}) Initiating fetch() to ${N8N_WEBHOOK_URL}...`);
-    const response = await fetch(N8N_WEBHOOK_URL, {
-      method: "POST",
-      mode: "cors",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    console.log(`[Bouncy AI] (${BUILD_MARKER}) Response received. HTTP Status: ${response.status} ${response.statusText}`);
-
-    // Read response text first to handle both JSON and plain-text gracefully
-    const rawText = await response.text();
-    console.log(`[Bouncy AI] (${BUILD_MARKER}) Raw Response Body:`, rawText);
-
-    if (!response.ok) {
-      if (response.status === 404 && N8N_WEBHOOK_URL.includes("webhook-test")) {
-        console.warn(
-          `[Bouncy AI] (${BUILD_MARKER}) Note: In n8n test mode, make sure you clicked 'Listen for test event' in the n8n canvas before sending the message.`
-        );
-      }
-      throw new Error(`n8n webhook error (${response.status} ${response.statusText}): ${rawText}`);
-    }
-
-    // Parse JSON
-    let data: any;
-    try {
-      data = JSON.parse(rawText);
-      console.log(`[Bouncy AI] (${BUILD_MARKER}) Parsed JSON Response:`, data);
-    } catch {
-      // If response is plain text instead of JSON
-      console.log(`[Bouncy AI] (${BUILD_MARKER}) Response is not JSON, using raw text string.`);
-      return rawText || "I received your message.";
-    }
-
-    // Read reply field according to n8n Respond to Webhook structure
-    const replyText =
-      data?.reply ||
-      data?.response ||
-      data?.message ||
-      data?.output ||
-      (typeof data === "string" ? data : "I received your message.");
-
-    console.log(`[Bouncy AI] (${BUILD_MARKER}) Final Assistant Text to display:`, replyText);
-    return replyText;
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-    if (error.name === "AbortError") {
-      console.error(`[Bouncy AI] (${BUILD_MARKER}) Request timed out after 30 seconds waiting for n8n response.`);
-      throw new Error("Request timed out. Please check your n8n workflow.");
-    }
-    console.error(`[Bouncy AI] (${BUILD_MARKER}) Network/Fetch error communicating with n8n:`, error);
-    throw error;
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`[Bouncy AI] Error Response (${response.status}):`, errorText);
+    throw new Error(`Failed to connect to n8n (${response.status}): ${errorText}`);
   }
+
+  const data = await response.json();
+  console.log("[Bouncy AI] Parsed response data:", data);
+
+  return data.reply;
 }
