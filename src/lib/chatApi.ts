@@ -3,10 +3,22 @@
  * Connects frontend directly to n8n webhook workflow.
  */
 
-// Production n8n webhook URL with environment variable support
+// n8n Webhook Endpoints
+export const N8N_TEST_WEBHOOK_URL =
+  "https://bouncydigital.app.n8n.cloud/webhook-test/bouncy-chat";
+
+export const N8N_PROD_WEBHOOK_URL =
+  "https://bouncydigital.app.n8n.cloud/webhook/bouncy-chat";
+
+/**
+ * Automatically selects the appropriate webhook endpoint:
+ * 1. Uses VITE_N8N_WEBHOOK_URL environment variable if explicitly set.
+ * 2. In local development (npm run dev / import.meta.env.DEV): uses the TEST URL (/webhook-test/bouncy-chat).
+ * 3. In production builds (npm run build / Vercel / import.meta.env.PROD): uses the PRODUCTION URL (/webhook/bouncy-chat).
+ */
 export const N8N_WEBHOOK_URL: string =
   import.meta.env.VITE_N8N_WEBHOOK_URL ||
-  "https://bouncydigital.app.n8n.cloud/webhook/bouncy-chat";
+  (import.meta.env.DEV ? N8N_TEST_WEBHOOK_URL : N8N_PROD_WEBHOOK_URL);
 
 /**
  * Sends a message to the n8n AI webhook workflow.
@@ -24,10 +36,15 @@ export async function sendMessage(
     sessionId,
   };
 
-  console.log("[Bouncy AI] Sending request to n8n:", {
-    url: N8N_WEBHOOK_URL,
-    payload,
-  });
+  const environmentMode = import.meta.env.DEV ? "Development (Test Webhook)" : "Production (Live Webhook)";
+
+  console.log(`[Bouncy AI] Environment: ${environmentMode}`);
+  console.log(`[Bouncy AI] Calling Webhook URL: ${N8N_WEBHOOK_URL}`);
+  console.log("[Bouncy AI] Request Payload:", payload);
+
+  // Setup 30s timeout abort controller
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
   try {
     const response = await fetch(N8N_WEBHOOK_URL, {
@@ -36,31 +53,34 @@ export async function sendMessage(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
-    console.log(`[Bouncy AI] Response status: ${response.status} ${response.statusText}`);
+    clearTimeout(timeoutId);
+
+    console.log(`[Bouncy AI] HTTP Status: ${response.status} ${response.statusText}`);
 
     // Read response text first to handle both JSON and plain-text gracefully
     const rawText = await response.text();
-    console.log("[Bouncy AI] Raw response body:", rawText);
+    console.log("[Bouncy AI] Raw Response Body:", rawText);
 
     if (!response.ok) {
-      console.error("[Bouncy AI] Server returned error response:", {
-        status: response.status,
-        statusText: response.statusText,
-        body: rawText,
-      });
-      throw new Error(`n8n webhook error: ${response.status} ${response.statusText} - ${rawText}`);
+      if (response.status === 404 && N8N_WEBHOOK_URL.includes("webhook-test")) {
+        console.warn(
+          "[Bouncy AI] Note: In n8n test mode, make sure you clicked 'Listen for test event' in the n8n canvas before sending the message."
+        );
+      }
+      throw new Error(`n8n webhook error (${response.status} ${response.statusText}): ${rawText}`);
     }
 
     // Parse JSON
     let data: any;
     try {
       data = JSON.parse(rawText);
-      console.log("[Bouncy AI] Parsed response JSON:", data);
+      console.log("[Bouncy AI] Parsed JSON Response:", data);
     } catch {
       // If response is plain text instead of JSON
-      console.log("[Bouncy AI] Response is not JSON, using raw text");
+      console.log("[Bouncy AI] Response is not JSON, using raw text string.");
       return rawText || "I received your message.";
     }
 
@@ -73,7 +93,12 @@ export async function sendMessage(
       (typeof data === "string" ? data : "I received your message.");
 
     return replyText;
-  } catch (error) {
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === "AbortError") {
+      console.error("[Bouncy AI] Request timed out after 30 seconds waiting for n8n response.");
+      throw new Error("Request timed out. Please check your n8n workflow.");
+    }
     console.error("[Bouncy AI] Network/Fetch error communicating with n8n:", error);
     throw error;
   }
